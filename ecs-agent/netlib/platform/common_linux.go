@@ -533,11 +533,30 @@ func (c *common) generateNetworkConfigFilesForDebugPlatforms(
 	}
 
 	// Copy Host's resolv.conf file.
-	err = c.copyFile(filepath.Join(netNSDir, ResolveConfFileName),
-		filepath.Join(c.resolvConfPath, ResolveConfFileName),
-		taskDNSConfigFileMode)
-	if err != nil {
-		return err
+	if len(iface.DomainNameServers) > 0 {
+		// Use DNS server from ENI
+		logger.Info("Creating resolv.conf file", map[string]interface{}{
+			"ResolveConfFile": filepath.Join(netNSDir, ResolveConfFileName),
+		})
+
+		data := c.nsUtil.BuildResolvConfig(iface.DomainNameServers, iface.DomainNameSearchList)
+		err := c.ioutil.WriteFile(
+			filepath.Join(netNSDir, ResolveConfFileName),
+			[]byte(data),
+			taskDNSConfigFileMode,
+		)
+
+		if err != nil {
+			return err
+		}
+	} else {
+		// Copy Host's resolv.conf file.
+		err = c.copyFile(filepath.Join(netNSDir, ResolveConfFileName),
+			filepath.Join(c.resolvConfPath, ResolveConfFileName),
+			taskDNSConfigFileMode)
+		if err != nil {
+			return err
+		}
 	}
 
 	err = c.copyFile(filepath.Join(netNSDir, HostsFileName), "/etc/hosts", taskDNSConfigFileMode)
