@@ -248,8 +248,16 @@ func (ni *NetworkInterface) GetIPAddressesWithPrefixLength() []string {
 	for _, addr := range ni.IPV4Addresses {
 		addresses = append(addresses, addr.Address+"/"+ni.GetIPv4SubnetPrefixLength())
 	}
-	for _, addr := range ni.IPV6Addresses {
-		addresses = append(addresses, addr.Address+"/"+IPv6SubnetPrefixLength)
+
+	if ni.IPv6Only() {
+		for _, addr := range ni.IPV6Addresses {
+			addresses = append(addresses, addr.Address+"/"+ni.GetIPv6SubnetPrefixLength())
+		}
+	} else {
+		// To be backwards compatible, we should use this for dual stack tasks.
+		for _, addr := range ni.IPV6Addresses {
+			addresses = append(addresses, addr.Address+"/"+IPv6SubnetPrefixLength)
+		}
 	}
 
 	return addresses
@@ -262,6 +270,15 @@ func (ni *NetworkInterface) GetIPv4SubnetPrefixLength() string {
 	}
 
 	return ni.ipv4SubnetPrefixLength
+}
+
+// GetIPv6SubnetPrefixLength returns the IPv6 prefix length of the NetworkInterface's subnet.
+func (ni *NetworkInterface) GetIPv6SubnetPrefixLength() string {
+	prefixLen := IPv6SubnetPrefixLength
+	if strings.Contains(ni.SubnetGatewayIPV6Address, "/") {
+		prefixLen = strings.Split(ni.SubnetGatewayIPV6Address, "/")[1]
+	}
+	return prefixLen
 }
 
 // GetIPv4SubnetCIDRBlock returns the IPv4 CIDR block, if any, of the NetworkInterface's subnet.
@@ -279,7 +296,12 @@ func (ni *NetworkInterface) GetIPv4SubnetCIDRBlock() string {
 // GetIPv6SubnetCIDRBlock returns the IPv6 CIDR block, if any, of the NetworkInterface's subnet.
 func (ni *NetworkInterface) GetIPv6SubnetCIDRBlock() string {
 	if ni.ipv6SubnetCIDRBlock == "" && len(ni.IPV6Addresses) > 0 {
-		ipv6Addr := ni.IPV6Addresses[0].Address + "/" + IPv6SubnetPrefixLength
+		// Hardcoded prefix length is used for dual-stack ENIs for historical reasons
+		prefixLength := IPv6SubnetPrefixLength
+		if ni.IPv6Only() {
+			prefixLength = ni.GetIPv6SubnetPrefixLength()
+		}
+		ipv6Addr := ni.IPV6Addresses[0].Address + "/" + prefixLength
 		_, ipv6Net, err := net.ParseCIDR(ipv6Addr)
 		if err == nil {
 			ni.ipv6SubnetCIDRBlock = ipv6Net.String()

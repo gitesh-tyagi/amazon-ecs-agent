@@ -57,7 +57,6 @@ import (
 	ecsclient "github.com/aws/amazon-ecs-agent/ecs-agent/api/ecs/client"
 	apierrors "github.com/aws/amazon-ecs-agent/ecs-agent/api/errors"
 	"github.com/aws/amazon-ecs-agent/ecs-agent/credentials"
-	"github.com/aws/amazon-ecs-agent/ecs-agent/credentials/instancecreds"
 	"github.com/aws/amazon-ecs-agent/ecs-agent/credentials/providers"
 	"github.com/aws/amazon-ecs-agent/ecs-agent/doctor"
 	"github.com/aws/amazon-ecs-agent/ecs-agent/ec2"
@@ -71,7 +70,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
-	aws_credentials "github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/smithy-go"
 	"github.com/cihub/seelog"
 	"github.com/pborman/uuid"
@@ -146,7 +144,6 @@ type ecsAgent struct {
 	dataClient                  data.Client
 	dockerClient                dockerapi.DockerClient
 	containerInstanceARN        string
-	credentialProvider          *aws_credentials.Credentials
 	credentialsCache            *aws.CredentialsCache
 	stateManagerFactory         factory.StateManager
 	saveableOptionFactory       factory.SaveableOption
@@ -213,7 +210,11 @@ func newAgent(blackholeEC2Metadata bool, acceptInsecureCert *bool) (agent, error
 		cfg.NoIID = true
 	}
 
-	ec2Client, err := ec2.NewClientImpl(cfg.AWSRegion)
+	ec2ClientDualStackEndpointState := aws.DualStackEndpointStateDisabled
+	if cfg.InstanceIPCompatibility.IsIPv6Only() {
+		ec2ClientDualStackEndpointState = aws.DualStackEndpointStateEnabled
+	}
+	ec2Client, err := ec2.NewClientImpl(cfg.AWSRegion, ec2ClientDualStackEndpointState)
 	if err != nil {
 		logger.Critical("Error creating EC2 client", logger.Fields{
 			field.Error: err,
@@ -271,7 +272,6 @@ func newAgent(blackholeEC2Metadata bool, acceptInsecureCert *bool) (agent, error
 		// We instantiate our own credentialProvider for use in acs/tcs. This tries
 		// to mimic roughly the way it's instantiated by the SDK for a default
 		// session.
-		credentialProvider:          instancecreds.GetCredentials(cfg.External.Enabled()),
 		credentialsCache:            credentialsCache,
 		stateManagerFactory:         factory.NewStateManager(),
 		saveableOptionFactory:       factory.NewSaveableOption(),
@@ -323,8 +323,22 @@ func (agent *ecsAgent) start() int {
 		})
 		return exitcodes.ExitError
 	}
+
+	// Options for ECS Client
+	ecsClientOpts := []ecsclient.ECSClientOption{
+		// We always exclude IPv4 bindings for IPv6-only instances
+		// as they are assumed to NOT be reachable over IPv4.
+		ecsclient.WithIPv4PortBindingExcluded(agent.cfg.InstanceIPCompatibility.IsIPv6Only()),
+
+		// Exclusion of IPv6 port bindings is controlled by configuration for historical reasons.
+		ecsclient.WithIPv6PortBindingExcluded(agent.cfg.ShouldExcludeIPv6PortBinding.Enabled()),
+
+		// If instance is IPv6-only then we must use dualstack ECS endpoints
+		ecsclient.WithDualStackEnabled(agent.cfg.InstanceIPCompatibility.IsIPv6Only()),
+	}
+
 	clientFactory := ecsclient.NewECSClientFactory(agent.credentialsCache, cfgAccessor, agent.ec2MetadataClient,
-		version.String(), ecsclient.WithIPv6PortBindingExcluded(true))
+		version.String(), ecsClientOpts...)
 	client, err := clientFactory.NewClient()
 	if err != nil {
 		logger.Critical("Unable to create new ECS client", logger.Fields{
